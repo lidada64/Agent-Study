@@ -64,7 +64,6 @@ def find_file(file_name):
             paths.append(path)
 
     str_paths = [str(p) for p in paths]
-    print(str_paths)
     return str_paths#接口需要接收字符串而不是windows路径
 
 def find_text(paths,text):
@@ -88,68 +87,54 @@ def find_text(paths,text):
 
 
 
-#实现两个工具的调用，一共需要两次iteration（response）
-
-
+#让model自动推断是否需要调用工具以实现agent loop
 inputList=[{"role":"user","content":"Find a file named '1.txt' and find the word 'lidada' if it existed"}]
 
-response=client.responses.create(
+maxRange=5
+for i in range(maxRange):
 
-model="deepseek-flash",
-tools=[tools[0]],#接口传的是列表
-input=inputList,
+    tool_executed=False
 
-)
+    response=client.responses.create(
 
+     model="deepseek-flash",
+     tools=tools,#接口传的是列表
+     input=inputList,
 
-inputList += response.output #存储模型的tool calling 请求
+    )
 
-#存储tool calling output
-for item in response.output:
-    if item.type=="function_call":#function_call 而不是function
-        if item.name=="find_file":
-          #执行函数
-          name=json.loads(item.arguments)["name"]
-          paths=find_file(name)
-         #将tool call output打包加入context(json)
-          inputList.append(
-                 {
-                    "type":"function_call_output",
-                    "call_id":item.call_id,
-                    "output": json.dumps(paths, ensure_ascii=False),
-                 }
-          ) 
-
-
-
-response=client.responses.create(
-model="deepseek-flash",
-tools=[tools[1]],
-input=inputList,
-
-)
-
-inputList += response.output #存储模型的tool calling 请求
+    inputList += response.output #存储模型的tool calling 请求
 
 #存储tool calling output
-for item in response.output:
-    if item.type=="function_call":
-        if item.name=="find_text":
+    for item in response.output:
+      if item.type=="function_call":#function_call 而不是function
+        
+         tool_executed=True
+
+         args=json.loads(item.arguments)#json.load读取对象,json.loads读取字符串
+         if item.name=="find_file":
           #执行函数
-          
-
-          paths=json.loads(item.arguments)["paths"]
-          text=json.loads(item.arguments)["text"]
-
-          location=find_text(paths,text)
+            result=find_file(args["name"])
          #将tool call output打包加入context(json)
-          inputList.append(
-                 {
+         elif item.name=="find_text":
+            result=find_text(args["paths"],args["text"])
+         #将tool call output打包加入context(json)
+         else:
+             raise ValueError(f"Unknown Tool {item.name}")
+         inputList.append(
+              {
                     "type":"function_call_output",
                     "call_id":item.call_id,
-                    "output": json.dumps(location, ensure_ascii=False),#这里json格式的数组会在传输时自动变成符合传输协议的字符串
-                 }
-          ) 
+                     "output": json.dumps(result, ensure_ascii=False),#这里json格式的数组会在传输时自动变成符合传输协议的字符串
+               }
+           ) 
+
+
+
+    if tool_executed==False:
+         break
+
+
 
 response=client.responses.create(
     model="deepseek-flash",
