@@ -3,9 +3,20 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 import json
+import logging
 load_dotenv();
 
+logger = logging.getLogger(__name__)
 client=OpenAI()
+#logging system config
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",#format
+    handlers=[
+        logging.StreamHandler(),#print on termina; 
+        logging.FileHandler("agent.log", encoding="utf-8"),#write in log file
+    ],
+)
 
 #tool call "find file and find text" 
 #find text: file
@@ -23,7 +34,7 @@ tools=[
             "description":"name of a file",
             },
         },
-    "required":["name"],#声明用required,与properties是同级的
+    "required":["name"],#Declare required at the same level as properties
     },
 
     },
@@ -35,7 +46,7 @@ tools=[
     "parameters":{
         "type":"object",
         "properties":{
-            "paths":{#paths是列表，不是一个字符串
+            "paths":{#paths is a list, not a single string
             "type":"array",
             "items":{"type":"string"},
             "description":"Absolute paths of file list",
@@ -53,7 +64,7 @@ tools=[
 
 
 
-#实现两个工具
+#Implement the two tools
 def find_file(file_name):
 
     root = Path("D:/CST/code/Agent")
@@ -64,84 +75,106 @@ def find_file(file_name):
             paths.append(path)
 
     str_paths = [str(p) for p in paths]
-    return str_paths#接口需要接收字符串而不是windows路径
+    return str_paths#The API requires strings rather than Windows Path objects
 
 def find_text(paths,text):
 
     locationList=[]
     if not isinstance(paths, list):
-        raise TypeError(f"paths 应为列表，实际为 {type(paths).__name__}")
-    #检验是否为列表
-    pathObjs=[Path(p) for  p in paths]#pathStr转化为pathObj
-   #同时如果这里是空列表则会报错 
+        raise TypeError(f"paths must be a list; received {type(paths).__name__}")
+    #Check whether paths is a list
+    pathObjs=[Path(p) for  p in paths]#Convert path strings to Path objects
+   #An empty list will skip the loop 
     for path in pathObjs:
         with path.open("r",encoding="utf-8",errors="replace")as file:
-            for line_number, line in enumerate(file, start=1): #按行迭代
+            for line_number, line in enumerate(file, start=1): #Iterate over lines
                if text in line:
                    locationList.append({
                        "path":str(path),
                        "line_number":line_number,
-                       }) #记录路径和行号
+                       }) #Record the path and line number
             
     return locationList 
 
 
 
-#让model自动推断是否需要调用工具以实现agent loop
+#Let the model decide whether to call tools in the agent loop
 inputList=[{"role":"user","content":"Find a file named '1.txt' and find the word 'lidada' if it existed"}]
 
 maxRange=5
+stop_reason=None
+final_text = ""
 for i in range(maxRange):
+    tool_executed = False
+    try:
+        response = client.responses.create(
+            model="deepseek-flash",
+            tools=tools,
+            input=inputList,
+        )
+    except Exception:
+        logger.exception("Model request failed")
+        stop_reason = "model_error"
+        break
 
-    tool_executed=False
-
-    response=client.responses.create(
-
-     model="deepseek-flash",
-     tools=tools,#接口传的是列表
-     input=inputList,
-
-    )
-
-    inputList += response.output #存储模型的tool calling 请求
-
-#存储tool calling output
+    # Store the model's tool call requests before their results.
+    inputList += response.output
+    tool_calls = []
     for item in response.output:
-      if item.type=="function_call":#function_call 而不是function
-        
-         tool_executed=True
+        if item.type == "function_call":
+            tool_calls.append(item)
 
-         args=json.loads(item.arguments)#json.load读取对象,json.loads读取字符串
-         if item.name=="find_file":
-          #执行函数
-            result=find_file(args["name"])
-         #将tool call output打包加入context(json)
-         elif item.name=="find_text":
-            result=find_text(args["paths"],args["text"])
-         #将tool call output打包加入context(json)
-         else:
-             raise ValueError(f"Unknown Tool {item.name}")
-         inputList.append(
-              {
-                    "type":"function_call_output",
-                    "call_id":item.call_id,
-                     "output": json.dumps(result, ensure_ascii=False),#这里json格式的数组会在传输时自动变成符合传输协议的字符串
-               }
-           ) 
+    for item in tool_calls:
+        logger.info(
+            "Tool started: step=%s tool=%s call_id=%s",
+            i + 1, item.name, item.call_id,
+        )
+        tool_executed = True
+        try:
+            args = json.loads(item.arguments)
+            if item.name == "find_file":
+                data = find_file(args["name"])
+            elif item.name == "find_text":
+                data = find_text(args["paths"], args["text"])
+            else:
+                raise ValueError(f"Unknown Tool {item.name}")
 
+            result = {"ok": True, "data": data}
+            logger.info("Tool Calling completed")
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            logger.exception("Tool error: tool=%s", item.name)
+            result = {
+                "ok": False,
+                "error": {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                },
+            }
 
+        # Return a result for each tool call, including failures.
+        inputList.append({
+            "type": "function_call_output",
+            "call_id": item.call_id,
+            "output": json.dumps(result, ensure_ascii=False),
+        })
 
-    if tool_executed==False:
-         break
+    if not tool_executed:
+        stop_reason = "completed"
+        final_text = response.output_text
+        break
+else:
+    stop_reason = "max_range"
 
+print("Final status:")
+if stop_reason == "completed":
+    print("Completed normally")
+    print("Final output:")
+    print(final_text)
+elif stop_reason == "model_error":
+    print("Model error")
+elif stop_reason == "max_range":
+    print("Maximum number of iterations reached")
+else:
+    print("Unknown Error")
 
-
-response=client.responses.create(
-    model="deepseek-flash",
-    input=inputList,
-    instructions="Summerize all locations of specific text as a list,if there's nothing location then send 'fail to find'",
-
-)
-
-print("Final output:")
-print(response.output_text)
+#Test cases: match found, file not found, text not found, file read failure
