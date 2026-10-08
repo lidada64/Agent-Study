@@ -10,6 +10,7 @@ from .mcp_tools import function_schema
 from .runner import finish_pending, json_item
 from .skill_library import LIBRARY_TOOLS
 from .state import now, set_tool_status
+from .reasoning import begin_reasoning, commit_reasoning, configure_reasoning, step_reasoning_text
 
 
 EXIT_WORDS = {"退出", "请退出", "我要退出", "退出吧", "结束", "结束对话", "退出对话", "结束聊天", "停止对话", "再见", "拜拜", "不聊了", "exit", "quit", "bye", "/exit", "/quit", "q"}
@@ -20,12 +21,14 @@ def is_exit(text):
 
 
 class SkillConversation:
-    def __init__(self, model_client, mcp_client, discovered, state, store, library, *, max_steps=8):
+    def __init__(self, model_client, mcp_client, discovered, state, store, library, *, max_steps=8, on_reasoning=None):
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
         self.model_client, self.mcp_client = model_client, mcp_client
         self.state, self.store, self.library = state, store, library
         self.max_steps = max_steps
+        configure_reasoning(state)
+        self.on_reasoning = on_reasoning
         self.mcp_tools = {f"skills_{tool.name}": tool.name for tool in discovered}
         if "skills_search_skills" not in self.mcp_tools or "skills_get_skill" not in self.mcp_tools:
             raise ValueError("Skill conversations require MCP search_skills and get_skill")
@@ -87,6 +90,7 @@ class SkillConversation:
     def fail(self, status, error, step=None):
         if step is not None:
             step["status"] = "model_error"
+            step["reasoning"]["status"] = "model_error"
         self.state["status"] = status
         self.state["last_error"] = {"type": type(error).__name__, "message": str(error)}
         self.store.save(self.state)
@@ -118,6 +122,7 @@ class SkillConversation:
                     step = {"number": len(state["steps"]) + 1, "turn": turn["number"], "status": "requesting_model", "created_at": now()}
                     state["steps"].append(step)
                 state["phase"] = "introduction" if turn["kind"] == "introduction" else "responding"
+                begin_reasoning(state, step)
                 self.store.save(state)
                 try:
                     response = await self.model_client.responses.create(
@@ -125,6 +130,7 @@ class SkillConversation:
                         input=copy.deepcopy(state["context"]),
                         tools=[] if turn["kind"] == "introduction" else self.tools,
                         store=False, include=["reasoning.encrypted_content"],
+                        reasoning=copy.deepcopy(state["reasoning"]),
                     )
                     if getattr(response, "status", "completed") != "completed":
                         raise ValueError(f"Model response is {response.status}; turn remains unfinished")
@@ -142,6 +148,7 @@ class SkillConversation:
                 except Exception as exc:
                     return self.fail("model_error", exc, step)
                 self.append_items(output)
+                commit_reasoning(state, step, output)
                 for item in calls:
                     call = {"call_id": item["call_id"], "name": item["name"], "arguments": item["arguments"], "step": step["number"], "attempts": 0, "result": None}
                     set_tool_status(call, "pending")
@@ -153,6 +160,12 @@ class SkillConversation:
                     if state["turn_count"] == MAX_USER_TURNS:
                         state.update(status="closed", close_reason="turn_limit", phase="done")
                 self.store.save(state)
+                text = step_reasoning_text(state, step)
+                if text and self.on_reasoning is not None:
+                    try:
+                        self.on_reasoning(text)
+                    except Exception:
+                        logging.getLogger(__name__).warning("Reasoning hook failed; checkpoint retained", exc_info=True)
                 if not calls:
                     return state["status"], turn["reply"]
                 await finish_pending(state, self.store, self.mcp_client, self.mcp_tools, tool_executor=self.execute_tool)
@@ -166,6 +179,7 @@ class SkillConversation:
                     set_tool_status(call, "interrupted")
             if state["steps"] and state["steps"][-1]["status"] == "requesting_model":
                 state["steps"][-1]["status"] = "interrupted"
+                state["steps"][-1]["reasoning"]["status"] = "interrupted"
             self.store.save(state)
             raise
 

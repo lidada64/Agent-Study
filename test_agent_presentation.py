@@ -39,12 +39,13 @@ class PresentationTests(unittest.TestCase):
             MarkdownRenderer("glow", write_output=output.append).render("# hello")
         self.assertEqual(output, ["# hello"])
 
-    def test_redirected_auto_output_is_original_markdown(self):
+    def test_redirected_auto_output_still_renders_markdown(self):
         output = []
-        with patch("sys.stdout.isatty", return_value=False), patch("agent_core.presentation.subprocess.run") as run:
+        with patch("sys.stdout.isatty", return_value=False), patch("agent_core.presentation.shutil.which", return_value=None), patch("agent_core.presentation.subprocess.run") as run:
             MarkdownRenderer(write_output=output.append).render("**你好**")
         run.assert_not_called()
-        self.assertEqual(output, ["**你好**"])
+        self.assertIn("你好", output[0])
+        self.assertNotIn("**你好**", output[0])
 
     def test_rich_renders_chinese_headings_lists_and_tables(self):
         output = []

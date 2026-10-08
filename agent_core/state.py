@@ -55,6 +55,8 @@ class StateStore:
         for field in ("prompt", "model", "status", "history", "steps", "tool_calls"):
             if field not in state:
                 raise ValueError(f"Invalid state.json: missing {field}")
+        from .reasoning import validate_reasoning
+        validate_reasoning(state)
         return state
 
     def save(self, state):

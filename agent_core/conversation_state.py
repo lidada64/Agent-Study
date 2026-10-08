@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from .config import DEFAULT_CONVERSATION_PATH, MAX_USER_TURNS, SKILL_SYSTEM_PROMPT
 from .state import StateStore, now
+from .reasoning import configure_reasoning, validate_reasoning
 
 
 class ConversationStore(StateStore):
@@ -64,18 +65,20 @@ class ConversationStore(StateStore):
                 raise ValueError("Invalid conversation tool result")
         if not all(isinstance(item, dict) for item in state["history"] + state["context"]):
             raise ValueError("Invalid conversation history")
+        validate_reasoning(state)
         return state
 
-    def start(self, model, library_file, compact_threshold, *, compact_mode=None, resume=False, new=False):
+    def start(self, model, library_file, compact_threshold, *, compact_mode=None, reasoning_effort=None, resume=False, new=False):
         if compact_mode is not None and compact_mode not in {"local", "summary", "standalone"}:
             raise ValueError("Invalid conversation compaction mode")
         existing = None if new else self.load()
         if resume and existing is None:
             raise ValueError("No saved conversation to resume")
         if existing is not None:
+            configure_reasoning(existing, reasoning_effort)
             if compact_mode is not None and compact_mode != existing["compact_mode"]:
                 existing["compact_mode"] = compact_mode
-                self.save(existing)
+            self.save(existing)
             return existing
         state = {
             "version": 2, "kind": "skill_conversation", "conversation_id": str(uuid4()),
@@ -87,5 +90,6 @@ class ConversationStore(StateStore):
             "compact_mode": compact_mode or "local",
             "close_reason": None,
         }
+        configure_reasoning(state, reasoning_effort)
         self.save(state)
         return state

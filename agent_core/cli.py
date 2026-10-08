@@ -21,6 +21,7 @@ from .runner import run_agent
 from .state import StateStore
 from .skill_library import SkillLibrary
 from .presentation import MarkdownHooks
+from .reasoning import EFFORTS
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +35,14 @@ async def main():
     parser = argparse.ArgumentParser(description="Interactive Skill search, download and automated input-list compaction.")
     parser.add_argument("prompt", nargs="?", help="Optional first user message after the introduction")
     parser.add_argument("--model", default=os.getenv("OPENAI_MODEL", "deepseek-flash"))
+    parser.add_argument("--reasoning-effort", choices=EFFORTS, help="Reasoning effort (default high for new sessions); saved in checkpoints and may be changed on resume")
     parser.add_argument("--max-steps", type=int, default=8, help="Maximum model requests per user turn or resume attempt (legacy: per invocation)")
     parser.add_argument("--state-file", type=Path, help="Conversation checkpoint (or legacy task checkpoint with --task)")
     parser.add_argument("--library-file", type=Path, default=DEFAULT_LIBRARY_PATH, help="JSON file containing downloaded Skill documents")
     parser.add_argument("--compact-threshold", type=int, default=DEFAULT_COMPACT_THRESHOLD, help="Compact before a model request when context reaches this many serialized UTF-8 bytes (not tokens)")
     parser.add_argument("--compact-mode", choices=("local", "summary", "standalone"), help="local: offline rules (default); summary: provider model generates a rolling summary; standalone: native compact endpoint; may be changed on resume")
     parser.add_argument("--task", action="store_true", help="Run the original resumable file/keyword search instead of a conversation")
-    parser.add_argument("--markdown", choices=("auto", "glow", "rich", "plain"), default="auto", help="Reply renderer: auto prefers Glow, then optional Rich; redirected auto output stays plain")
+    parser.add_argument("--markdown", choices=("auto", "glow", "rich", "plain"), default="auto", help="Reasoning and reply renderer: auto prefers Glow, then optional Rich; plain preserves Markdown")
     parser.add_argument("--render-session-end", action="store_true", help="Also render the exported conversation Markdown when the interactive session exits")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--resume", action="store_true", help="Continue the saved conversation or legacy task")
@@ -77,7 +79,7 @@ async def main():
     elif not args.check_mcp:
         store = ConversationStore(args.state_file)
         try:
-            state = store.start(args.model, args.library_file.resolve(), args.compact_threshold, compact_mode=args.compact_mode, resume=args.resume, new=args.new)
+            state = store.start(args.model, args.library_file.resolve(), args.compact_threshold, compact_mode=args.compact_mode, reasoning_effort=args.reasoning_effort, resume=args.resume, new=args.new)
             library = SkillLibrary(state["library_file"])
             library.load()  # Validate before making any model or MCP requests.
         except (ValueError, OSError) as exc:
@@ -100,12 +102,14 @@ async def main():
                 return 0 if result["ok"] else 1
             async with AsyncOpenAI() as model_client:
                 if not args.task:
-                    conversation = SkillConversation(model_client, mcp_client, discovered, state, store, library, max_steps=args.max_steps)
                     hooks = MarkdownHooks(store.path, mode=args.markdown, render_session_end=args.render_session_end)
+                    conversation = SkillConversation(model_client, mcp_client, discovered, state, store, library, max_steps=args.max_steps, on_reasoning=hooks.on_reasoning)
                     return await interactive_loop(conversation, args.prompt, hooks=hooks)
                 status, final_text = await run_agent(
                     model_client, mcp_client, discovered, state["prompt"], state["model"], args.max_steps,
                     state_path=args.state_file, resume=True,
+                    reasoning_effort=args.reasoning_effort,
+                    on_reasoning=MarkdownHooks(args.state_file, mode=args.markdown).on_reasoning,
                 )
     except Exception:
         logger.exception("MCP connection or agent startup failed; saved progress is retained")

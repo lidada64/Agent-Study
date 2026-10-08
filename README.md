@@ -54,6 +54,26 @@ python code/agent_demo.py --new --library-file ./my_skills.json
 
 ## Conversation 与压缩
 
+### Reasoning 配置、状态与回传
+
+DeepSeek 的 Responses API 支持 `reasoning={"effort": "none|low|high|max"}`：`none` 关闭推理，其余开启。`summary` 参数可传但不生成摘要；返回的是 `type="reasoning"` item，明文放在 `content` 的 `reasoning_text` 内容块中。DeepSeek 不支持 `include`、`encrypted_content` 或服务端对话接续。参见 [DeepSeek Responses 兼容性](https://api-docs.deepseek.com/zh-cn/guides/responses_api/) 和 [reasoning 请求/响应定义](https://api-docs.deepseek.com/api/create-response/)。
+
+新会话默认显式请求 `high`。可以关闭或调整，也可以在恢复时修改；不指定时继续使用检查点配置。默认对话和 `--task` 均支持：
+
+```powershell
+python code/agent_demo.py --new --reasoning-effort high
+python code/agent_demo.py --resume --reasoning-effort low
+python code/agent_demo.py --new --reasoning-effort none
+```
+
+`reasoning.effort` 保存在会话检查点；每个 `steps[i].reasoning` 保存本次请求的 `effort`、`status` 和 `history_indices`。状态依次为 `in_progress` → `completed`，没有返回推理 item 时为 `unavailable`，关闭且无推理时为 `disabled`；请求错误或中断分别为 `model_error`、`interrupted`，恢复时重新发起该步骤。不把没有明文的加密 item 当作可展示文本，也不伪造模型未返回的推理。
+
+原始 reasoning item 按响应顺序写入 `history` 和 `context`，不转换为普通 assistant 消息；后续工具步骤和用户轮次都从客户端工作窗口回传。状态索引引用完整 `history`，不会因压缩而改变。旧检查点加载时补充默认 `high` 配置，已有 reasoning 原文继续保留和回传。
+
+每次非流式响应完整返回并落盘后，推理单独显示在“助手推理”区域，再执行工具或显示回复；不是 token 级流式展示。SessionEnd Markdown 按用户轮次导出所有可见推理，包括工具步骤的推理和未完成轮次已保存的推理；只含密文的 item 不展示。OpenAI 返回的可见 `summary_text` 也可展示，其余原始字段保留用于回传。
+
+压缩仍遵循最近两轮完整保留的窗口策略：这两轮的 reasoning、消息和工具配对原样保留。较早 reasoning 在 `local` 中提取带索引的有限摘录，在 `summary` 中参与滚动摘要，推理决策与待验证假设不作为执行证据。旧原文始终保留在 `history`，可用历史工具重读；压缩后的工作窗口不会无限携带全部旧推理。`standalone` 继续采用服务返回的窗口。
+
 默认检查点是项目根目录 `conversation.json`，与原搜索 Demo 的 `state.json` 分开。
 
 | 字段 | 用途 |
@@ -122,9 +142,9 @@ python code/agent_demo.py --new
 
 ### Markdown 展示与 SessionEnd hook
 
-展示由独立的 `presentation.py` 负责，不改变模型输入、压缩或 JSON 检查点。CLI 默认通过回复 hook 渲染 Markdown：交互终端优先使用 PATH 中的 Glow，否则尝试 Rich，均不可用时显示原文。重定向输出时 `auto` 保留原始 Markdown。
+展示由独立的 `presentation.py` 负责，不改变模型输入、压缩或 JSON 检查点。CLI 默认通过推理和回复 hook 渲染 Markdown：优先使用 PATH 中的 Glow，否则尝试 Rich，均不可用时显示原文。重定向输出时 `auto` 仍尝试渲染；需要原始 Markdown 时选择 `plain`。
 
-每次交互进程退出时，SessionEnd hook 将可见对话原子导出到检查点旁的 `<检查点文件名>.md`（默认 `conversation.json.md`），包含介绍、用户消息、最终回复和未完成标记，不导出内部推理或工具载荷。主动退出、10 轮上限、EOF、可恢复错误和可捕获中断都会调用；错误或中断只结束本次进程，不把可恢复 conversation 标记为关闭。进程被强制终止或断电时无法保证执行 hook，JSON 检查点仍是恢复依据。
+每次交互进程退出时，SessionEnd hook 将可见对话原子导出到检查点旁的 `<检查点文件名>.md`（默认 `conversation.json.md`），包含介绍、用户消息、可见推理、最终回复和未完成标记，不导出密文或工具载荷。主动退出、10 轮上限、EOF、可恢复错误和可捕获中断都会调用；错误或中断只结束本次进程，不把可恢复 conversation 标记为关闭。进程被强制终止或断电时无法保证执行 hook，JSON 检查点仍是恢复依据。
 
 在 SessionEnd 时同时渲染完整对话：
 

@@ -7,6 +7,7 @@ from .config import DEFAULT_PROMPT, DEFAULT_STATE_PATH, INSTRUCTIONS
 from .local_tools import LOCAL_TOOLS
 from .mcp_tools import execute_tool, function_schema
 from .state import StateStore, now, set_tool_status
+from .reasoning import begin_reasoning, commit_reasoning, configure_reasoning, step_reasoning_text
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ async def finish_pending(state, store, mcp_client, mcp_tools, *, tool_executor=N
 
 
 async def run_agent(model_client, mcp_client, discovered, prompt, model, max_steps,
-                    *, state_path=DEFAULT_STATE_PATH, resume=False, new_task=False):
+                    *, state_path=DEFAULT_STATE_PATH, resume=False, new_task=False, reasoning_effort=None, on_reasoning=None):
     """Resume checkpoints first; max_steps limits new model requests this run."""
     if max_steps < 1:
         raise ValueError("max_steps must be positive")
@@ -86,6 +87,7 @@ async def run_agent(model_client, mcp_client, discovered, prompt, model, max_ste
     if prompt is None and not resume and (new_task or not store.path.exists()):
         prompt = DEFAULT_PROMPT
     state = store.start(prompt, model, resume=resume, new_task=new_task)
+    configure_reasoning(state, reasoning_effort)
     if state["status"] == "completed":
         return "completed", state["final_text"]
     mcp_tools = {f"skills_{tool.name}": tool.name for tool in discovered}
@@ -109,16 +111,20 @@ async def run_agent(model_client, mcp_client, discovered, prompt, model, max_ste
                 step = {"number": len(state["steps"]) + 1, "status": "requesting_model", "created_at": now()}
                 state["steps"].append(step)
             state["status"] = "running"
+            begin_reasoning(state, step)
             store.save(state)
             logger.info("Model step=%s available_tools=%s", step["number"], [tool["name"] for tool in tools])
             try:
                 response = await model_client.responses.create(
                     model=state["model"], instructions=INSTRUCTIONS, tools=tools,
                     input=copy.deepcopy(state["history"]),
+                    reasoning=copy.deepcopy(state["reasoning"]), store=False,
+                    include=["reasoning.encrypted_content"],
                 )
             except Exception as exc:
                 logger.exception("Model request failed")
                 step["status"] = "model_error"
+                step["reasoning"]["status"] = "model_error"
                 state["status"] = "model_error"
                 state["last_error"] = {"type": type(exc).__name__, "message": str(exc)}
                 store.save(state)
@@ -126,6 +132,7 @@ async def run_agent(model_client, mcp_client, discovered, prompt, model, max_ste
             output = [json_item(item) for item in response.output]
             calls = [item for item in output if item["type"] == "function_call"]
             state["history"].extend(output)
+            commit_reasoning(state, step, output)
             for item in calls:
                 call = {
                     "call_id": item["call_id"], "name": item["name"],
@@ -139,6 +146,12 @@ async def run_agent(model_client, mcp_client, discovered, prompt, model, max_ste
                 state.update(status="completed", phase="done", final_text=response.output_text)
             # Save the entire response before executing any tool.
             store.save(state)
+            text = step_reasoning_text(state, step)
+            if text and on_reasoning is not None:
+                try:
+                    on_reasoning(text)
+                except Exception:
+                    logger.warning("Reasoning hook failed; checkpoint retained", exc_info=True)
             if not calls:
                 return "completed", state["final_text"]
             await finish_pending(state, store, mcp_client, mcp_tools)
@@ -152,5 +165,6 @@ async def run_agent(model_client, mcp_client, discovered, prompt, model, max_ste
                 set_tool_status(call, "interrupted")
         if state["steps"] and state["steps"][-1]["status"] == "requesting_model":
             state["steps"][-1]["status"] = "interrupted"
+            state["steps"][-1]["reasoning"]["status"] = "interrupted"
         store.save(state)
         raise

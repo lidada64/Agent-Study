@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from .reasoning import reasoning_text
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +24,10 @@ class MarkdownRenderer:
         if self.mode == "plain":
             self.write_output(text)
             return
-        # Auto leaves redirected output machine-readable and free of ANSI escapes.
-        if self.mode == "auto" and not sys.stdout.isatty():
-            self.write_output(text)
-            return
+        # Auto now always attempts to render, even if redirected or in non-TTY IDEs.
+        # if self.mode == "auto" and not sys.stdout.isatty():
+        #     self.write_output(text)
+        #     return
         glow = shutil.which("glow") if self.mode in {"auto", "glow"} else None
         if glow:
             try:
@@ -48,22 +49,37 @@ class MarkdownRenderer:
             from rich.markdown import Markdown
 
             buffer = io.StringIO()
-            Console(file=buffer, width=self.width, force_terminal=sys.stdout.isatty()).print(Markdown(text))
+            # Force terminal colors if the user requested rendering (rich/glow/auto) or if it's a real TTY
+            force_tty = True if self.mode in {"rich", "glow", "auto"} else sys.stdout.isatty()
+            Console(file=buffer, width=self.width, force_terminal=force_tty).print(Markdown(text))
             self.write_output(buffer.getvalue().rstrip("\n"))
-        except Exception:
-            logger.warning("Markdown rendering failed; displaying original text")
+        except Exception as e:
+            logger.warning("Markdown rendering failed: %s", e, exc_info=True)
             self.write_output(text)
 
 
 def transcript_markdown(state):
-    """Export user-visible messages, excluding reasoning and tool payloads."""
+    """Export replies and visible reasoning, excluding tool payloads and ciphertext."""
     parts = ["# Skill 助手对话", f"状态：{state['status']}；用户轮次：{state['turn_count']}/10"]
+    reasoning_by_turn = {}
+    number = 0
+    for item in state.get("history", []):
+        if item.get("role") == "user":
+            number += 1
+        if item.get("type") == "reasoning":
+            text = reasoning_text(item)
+            if text:
+                reasoning_by_turn.setdefault(number, []).append(text)
     for turn in state["turns"]:
         if turn["kind"] == "introduction":
             parts.append("## 助手介绍")
         else:
             parts.extend([f"## 第 {turn['number']} 轮", "### 用户", turn["text"], "### 助手"])
+        for index, text in enumerate(reasoning_by_turn.get(turn["number"], []), 1):
+            parts.extend([f"### 推理 {index}", text])
         if turn.get("reply"):
+            if reasoning_by_turn.get(turn["number"]):
+                parts.append("### 回复")
             parts.append(turn["reply"])
         elif turn["status"] != "completed":
             parts.append("（本轮尚未完成，可恢复继续。）")
@@ -97,6 +113,10 @@ class MarkdownHooks:
     def on_reply(self, reply):
         self.write_output("助手：")
         self.renderer.render(reply)
+
+    def on_reasoning(self, text):
+        self.write_output("助手推理：")
+        self.renderer.render(text)
 
     def on_session_end(self, state):
         text = transcript_markdown(state)
