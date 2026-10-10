@@ -5,7 +5,7 @@ from .config import ROOT
 LOCAL_TOOLS = [
     {
         "type": "function", "name": "find_file",
-        "description": "Discover files by name or glob and return absolute paths before searching their contents.",
+        "description": "Discover real files in the workspace by name or glob and return absolute paths. Call this before find_text so the keyword search uses actual discovered paths.",
         "parameters": {
             "type": "object", "properties": {"name": {"type": "string"}},
             "required": ["name"],
@@ -13,7 +13,7 @@ LOCAL_TOOLS = [
     },
     {
         "type": "function", "name": "find_text",
-        "description": "Search a keyword in previously discovered files; return paths and line numbers.",
+        "description": "Search a keyword inside real file contents and return matching paths and line numbers. Only paths returned by a completed find_file call are accepted; this is not the downloaded Skill library search.",
         "parameters": {
             "type": "object",
             "properties": {

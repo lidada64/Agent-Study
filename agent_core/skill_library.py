@@ -16,7 +16,7 @@ LIBRARY_TOOLS = [
     },
     {
         "type": "function", "name": "search_saved_skills",
-        "description": "Search downloaded skills by keywords in their id, name and full document. An empty query lists saved skills.",
+        "description": "Search the downloaded Skill library (a local JSON file) by keywords in id, name and full document. It never searches workspace files: use find_file and find_text for files. An empty query lists saved skills.",
         "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"], "additionalProperties": False},
     },
     {

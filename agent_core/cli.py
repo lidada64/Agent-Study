@@ -40,7 +40,7 @@ async def main():
     parser.add_argument("--state-file", type=Path, help="Conversation checkpoint (or legacy task checkpoint with --task)")
     parser.add_argument("--library-file", type=Path, default=DEFAULT_LIBRARY_PATH, help="JSON file containing downloaded Skill documents")
     parser.add_argument("--compact-threshold", type=int, default=DEFAULT_COMPACT_THRESHOLD, help="Compact before a model request when context reaches this many serialized UTF-8 bytes (not tokens)")
-    parser.add_argument("--compact-mode", choices=("local", "summary", "standalone"), help="local: offline rules (default); summary: provider model generates a rolling summary; standalone: native compact endpoint; may be changed on resume")
+    parser.add_argument("--compact-mode", choices=("none", "local", "summary", "standalone"), help="none: uncompressed baseline; local: offline rules (default); summary: provider model generates a rolling summary; standalone: native compact endpoint; may be changed on resume")
     parser.add_argument("--task", action="store_true", help="Run the original resumable file/keyword search instead of a conversation")
     parser.add_argument("--markdown", choices=("auto", "glow", "rich", "plain"), default="auto", help="Reasoning and reply renderer: auto prefers Glow, then optional Rich; plain preserves Markdown")
     parser.add_argument("--render-session-end", action="store_true", help="Also render the exported conversation Markdown when the interactive session exits")

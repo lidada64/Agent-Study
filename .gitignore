@@ -10,3 +10,4 @@ state.json
 state.json.*.tmp
 agent.log
 progress_checks/
+eval_results/

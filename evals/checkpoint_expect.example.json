@@ -1,0 +1,6 @@
+{
+  "status": "closed",
+  "turns": [
+    {"number": 1, "tools": ["find_file", "find_text"], "reply_contains": ["lidada"]}
+  ]
+}

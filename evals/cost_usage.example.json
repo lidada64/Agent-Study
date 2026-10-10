@@ -1,0 +1,5 @@
+{
+  "note": "Synthetic data for demonstrating the calculator; not a measured compression result. All request purposes, including summary, must already be included.",
+  "baseline": {"label": "none", "input_tokens": 100000, "cached_tokens": 90000, "output_tokens": 5000},
+  "compressed": {"label": "summary", "input_tokens": 50000, "cached_tokens": 10000, "output_tokens": 6000}
+}

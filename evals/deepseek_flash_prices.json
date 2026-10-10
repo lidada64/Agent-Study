@@ -1,0 +1,14 @@
+{
+  "model": "deepseek-flash",
+  "model_version": "DeepSeek-V4.1-Flash",
+  "legacy_aliases": ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp"],
+  "currency": "CNY",
+  "unit_tokens": 1000000,
+  "retrieved_at": "2026-10-10",
+  "source_url": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
+  "period_note": "Beijing time: Mon-Fri excluding PRC statutory holidays 09:00-12:00 and 14:00-18:00 are peak; all other times are off_peak. Select a profile explicitly; this snapshot does not infer holidays or account discounts.",
+  "profiles": {
+    "off_peak": {"cached_input": "0.02", "uncached_input": "1", "output": "4"},
+    "peak": {"cached_input": "0.04", "uncached_input": "2", "output": "8"}
+  }
+}

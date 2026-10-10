@@ -1,0 +1,18 @@
+[
+  {
+    "id": "local-file-search",
+    "messages": ["在工作区查找 eval_sample.txt，并搜索 lidada，报告匹配行号。", "退出"],
+    "expect": {"status": "closed", "turns": [
+      {"number": 0, "tools": []},
+      {"number": 1, "tools": ["find_file", "find_text"], "reply_contains": ["2", "3"], "result_contains": ["\"line_number\": 2", "\"line_number\": 3"], "forbidden_tools": ["search_saved_skills"]}
+    ]}
+  },
+  {
+    "id": "empty-saved-library",
+    "messages": ["列出本地已收藏的所有 Skill，不要搜索远程。", "退出"],
+    "expect": {"status": "closed", "turns": [
+      {"number": 0, "tools": []},
+      {"number": 1, "tools": ["search_saved_skills"], "forbidden_tools": ["skills_search_skills", "find_file", "find_text"]}
+    ]}
+  }
+]

@@ -47,6 +47,7 @@ class SummaryContextTests(unittest.IsolatedAsyncioTestCase):
         summary = requests[3].kwargs
         self.assertEqual(summary["tools"], [])
         self.assertFalse(summary["store"])
+        self.assertEqual(summary["reasoning"], {"effort": "none"})
         self.assertNotIn("previous_response_id", summary)
         source = json.loads(summary["input"][0]["content"])
         self.assertIsNone(source["previous_summary"])
@@ -61,6 +62,10 @@ class SummaryContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.state["compactions"][0]["mode"], "summary")
         self.assertLess(context_size(self.state["context"]), context_size(self.state["history"]))
         self.assertEqual(self.store.load()["summary_memory"], self.state["summary_memory"])
+        self.assertEqual([r["purpose"] for r in self.state["model_requests"]],
+                         ["conversation", "conversation", "conversation", "summary", "conversation"])
+        self.assertEqual(self.store.load()["model_requests"], self.state["model_requests"])
+        self.assertGreaterEqual(self.state["compactions"][0]["elapsed_seconds"], 0)
         model.responses.compact.assert_not_awaited()
 
     async def test_rolling_summary_uses_previous_memory_and_only_new_archived_turns(self):
@@ -126,7 +131,9 @@ class SummaryContextTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.store, "save", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 await compact_context(model, self.state, self.store, force=True)
-        self.assertEqual(self.state, original)
+        self.assertEqual({k: v for k, v in self.state.items() if k != "model_requests"},
+                         {k: v for k, v in original.items() if k != "model_requests"})
+        self.assertEqual(len(self.state["model_requests"]), len(original["model_requests"]) + 1)
 
     async def test_larger_summary_does_not_replace_context(self):
         model = model_with(answer("介绍"), answer("旧资料 " * 1000), answer("第二轮"), answer("更大的摘要 " * 5000))
@@ -135,7 +142,9 @@ class SummaryContextTests(unittest.IsolatedAsyncioTestCase):
         conversation.append_items([{"role": "user", "content": "第三轮"}])
         original = copy.deepcopy(self.state)
         self.assertFalse(await compact_context(model, self.state, self.store, force=True))
-        self.assertEqual(self.state, original)
+        self.assertEqual({k: v for k, v in self.state.items() if k != "model_requests"},
+                         {k: v for k, v in original.items() if k != "model_requests"})
+        self.assertEqual(len(self.state["model_requests"]), len(original["model_requests"]) + 1)
 
     def test_resume_can_switch_to_summary_and_reject_invalid_memory(self):
         resumed = self.store.start("deepseek-flash", self.library.path, 4000, compact_mode="summary", resume=True)

@@ -112,6 +112,61 @@ class SkillConversationTests(unittest.IsolatedAsyncioTestCase):
         second_user_input = model.responses.create.call_args_list[4].kwargs["input"]
         self.assertIn({"role": "user", "content": "搜索并下载 Python testing"}, second_user_input)
 
+    async def test_local_file_and_keyword_tools_are_declared_and_run_in_order(self):
+        """Regression: the conversation must expose find_file/find_text, not only Skill tools."""
+        target = self.root / "1.txt"
+        target.write_text("first\nlidada\nlast lidada\n", encoding="utf-8")
+        patcher = patch("agent_core.local_tools.ROOT", self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        model = model_with(
+            answer("介绍"),
+            tool_response(call("find_file", {"name": "1.txt"}, "files")),
+            tool_response(call("find_text", {"paths": [str(target)], "text": "lidada"}, "text")),
+            answer("找到 2 处"),
+        )
+        conversation = self.conversation(model)
+        declared = {tool["name"] for tool in conversation.tools}
+        self.assertIn("find_file", declared)
+        self.assertIn("find_text", declared)
+        self.assertIn("search_saved_skills", declared)
+
+        inputs = iter(["在工作区找 1.txt 并搜索 lidada", "退出"])
+        await interactive_loop(conversation, read_input=lambda _: next(inputs), write_output=lambda _: None)
+
+        # The model must actually receive both tools on a real user turn, not just hold them.
+        turn_tools = {tool["name"] for tool in model.responses.create.call_args_list[1].kwargs["tools"]}
+        self.assertIn("find_file", turn_tools)
+        self.assertIn("find_text", turn_tools)
+        self.assertEqual([c["name"] for c in self.state["tool_calls"]], ["find_file", "find_text"])
+        self.assertEqual([c["status"] for c in self.state["tool_calls"]], ["completed", "completed"])
+        self.assertEqual(
+            [hit["line_number"] for hit in self.state["tool_calls"][1]["result"]["data"]], [2, 3],
+        )
+        # Local file search never reaches the Skill MCP server.
+        self.client.call_tool.assert_not_awaited()
+
+    async def test_find_text_rejects_paths_that_find_file_never_returned(self):
+        target = self.root / "1.txt"
+        target.write_text("lidada\n", encoding="utf-8")
+        patcher = patch("agent_core.local_tools.ROOT", self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        model = model_with(
+            answer("介绍"),
+            tool_response(call("find_text", {"paths": [str(target)], "text": "lidada"}, "text")),
+            answer("无法检索"),
+        )
+        conversation = self.conversation(model)
+        await conversation.introduce()
+        await conversation.submit("直接搜索 lidada")
+
+        call_record = self.state["tool_calls"][0]
+        self.assertEqual(call_record["status"], "failed")
+        self.assertIn("completed find_file call", call_record["result"]["error"]["message"])
+
     async def test_library_is_searchable_after_restart_and_download_is_idempotent(self):
         await self.library.download("python-testing", self.client, {"skills_get_skill": "get_skill"})
         reloaded = SkillLibrary(self.library.path)
@@ -178,7 +233,9 @@ class SkillConversationTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.store, "save", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 await compact_context(model, self.state, self.store, force=True)
-        self.assertEqual(self.state, original)
+        self.assertEqual({k: v for k, v in self.state.items() if k != "model_requests"},
+                         {k: v for k, v in original.items() if k != "model_requests"})
+        self.assertEqual(len(self.state["model_requests"]), len(original["model_requests"]) + 1)
 
     async def test_incomplete_or_empty_response_does_not_finish_turn(self):
         for response in (answer("partial", status="incomplete"), answer("")):

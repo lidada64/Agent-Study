@@ -2,12 +2,14 @@ import asyncio
 import copy
 import json
 import logging
+from time import perf_counter
 
 from .config import DEFAULT_PROMPT, DEFAULT_STATE_PATH, INSTRUCTIONS
 from .local_tools import LOCAL_TOOLS
 from .mcp_tools import execute_tool, function_schema
 from .state import StateStore, now, set_tool_status
 from .reasoning import begin_reasoning, commit_reasoning, configure_reasoning, step_reasoning_text
+from .metrics import measured_request
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,7 @@ async def finish_pending(state, store, mcp_client, mcp_tools, *, tool_executor=N
         state["phase"] = "search" if call["name"] == "find_text" else "discover"
         store.save(state)
         logger.info("Tool started: step=%s tool=%s call_id=%s", call["step"], call["name"], call["call_id"])
+        started = perf_counter()
         try:
             arguments = json.loads(call["arguments"])
             if not isinstance(arguments, dict):
@@ -57,6 +60,10 @@ async def finish_pending(state, store, mcp_client, mcp_tools, *, tool_executor=N
         except Exception as exc:
             logger.exception("Tool error: tool=%s", call["name"])
             result = {"ok": False, "error": {"type": type(exc).__name__, "message": str(exc)}}
+        finally:
+            elapsed = perf_counter() - started
+            call.setdefault("attempt_seconds", []).append(elapsed)
+            call["elapsed_seconds"] = call.get("elapsed_seconds", 0) + elapsed
         call["result"] = result
         set_tool_status(call, "completed" if result["ok"] else "failed")
         # Result and function output are committed together.
@@ -103,7 +110,7 @@ async def run_agent(model_client, mcp_client, discovered, prompt, model, max_ste
             # Keep declarations stable: some models retain their first-turn
             # understanding of capabilities in reasoning replayed in history.
             # Execution checks above still require real discovered file paths.
-            tools = LOCAL_TOOLS + [function_schema(tool) for tool in discovered]
+            tools = LOCAL_TOOLS + [function_schema(tool) for tool in sorted(discovered, key=lambda tool: tool.name)]
             if state["steps"] and state["steps"][-1]["status"] in {"requesting_model", "interrupted", "model_error"}:
                 step = state["steps"][-1]
                 step["status"] = "requesting_model"
@@ -115,7 +122,7 @@ async def run_agent(model_client, mcp_client, discovered, prompt, model, max_ste
             store.save(state)
             logger.info("Model step=%s available_tools=%s", step["number"], [tool["name"] for tool in tools])
             try:
-                response = await model_client.responses.create(
+                response = await measured_request(model_client, state, purpose="task",
                     model=state["model"], instructions=INSTRUCTIONS, tools=tools,
                     input=copy.deepcopy(state["history"]),
                     reasoning=copy.deepcopy(state["reasoning"]), store=False,

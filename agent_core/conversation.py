@@ -6,11 +6,13 @@ import logging
 
 from .config import MAX_USER_TURNS
 from .context import HISTORY_TOOLS, compact_context, read_history
+from .local_tools import LOCAL_TOOLS
 from .mcp_tools import function_schema
 from .runner import finish_pending, json_item
 from .skill_library import LIBRARY_TOOLS
 from .state import now, set_tool_status
 from .reasoning import begin_reasoning, commit_reasoning, configure_reasoning, step_reasoning_text
+from .metrics import measured_request
 
 
 EXIT_WORDS = {"退出", "请退出", "我要退出", "退出吧", "结束", "结束对话", "退出对话", "结束聊天", "停止对话", "再见", "拜拜", "不聊了", "exit", "quit", "bye", "/exit", "/quit", "q"}
@@ -32,7 +34,9 @@ class SkillConversation:
         self.mcp_tools = {f"skills_{tool.name}": tool.name for tool in discovered}
         if "skills_search_skills" not in self.mcp_tools or "skills_get_skill" not in self.mcp_tools:
             raise ValueError("Skill conversations require MCP search_skills and get_skill")
-        self.tools = LIBRARY_TOOLS + HISTORY_TOOLS + [function_schema(tool) for tool in discovered]
+        # Local file search is declared first so it stays as prominent as in the
+        # legacy --task loop; both modes share one executor and one ordering rule.
+        self.tools = LOCAL_TOOLS + LIBRARY_TOOLS + HISTORY_TOOLS + [function_schema(tool) for tool in sorted(discovered, key=lambda tool: tool.name)]
 
     def append_items(self, items):
         self.state["history"].extend(copy.deepcopy(items))
@@ -53,7 +57,7 @@ class SkillConversation:
                 return await self.resume_turn()
             return "ready", ""
         self.state["turns"].append({"number": 0, "kind": "introduction", "status": "running", "reply": ""})
-        self.append_items([{"role": "developer", "content": "请先向用户介绍你的 Skill 检索、下载录入、本地关键词查询能力和退出方法，然后等待用户输入。"}])
+        self.append_items([{"role": "developer", "content": "请先向用户介绍你的 Skill 检索、下载录入、本地文件与关键词检索能力和退出方法，然后等待用户输入。"}])
         self.store.save(self.state)
         return await self.resume_turn()
 
@@ -125,7 +129,7 @@ class SkillConversation:
                 begin_reasoning(state, step)
                 self.store.save(state)
                 try:
-                    response = await self.model_client.responses.create(
+                    response = await measured_request(self.model_client, state, purpose="conversation",
                         model=state["model"], instructions=state["instructions"],
                         input=copy.deepcopy(state["context"]),
                         tools=[] if turn["kind"] == "introduction" else self.tools,

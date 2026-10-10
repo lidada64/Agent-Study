@@ -30,7 +30,7 @@ class ConversationStore(StateStore):
         # Older checkpoints only supported the standalone endpoint. Migrate to
         # client-owned local memory unless an explicit mode was already saved.
         state.setdefault("compact_mode", "local")
-        if not isinstance(state["compact_mode"], str) or state["compact_mode"] not in {"local", "summary", "standalone"}:
+        if not isinstance(state["compact_mode"], str) or state["compact_mode"] not in {"none", "local", "summary", "standalone"}:
             raise ValueError("Invalid conversation compaction mode")
         memory = state.get("summary_memory")
         if memory is not None and (
@@ -69,7 +69,7 @@ class ConversationStore(StateStore):
         return state
 
     def start(self, model, library_file, compact_threshold, *, compact_mode=None, reasoning_effort=None, resume=False, new=False):
-        if compact_mode is not None and compact_mode not in {"local", "summary", "standalone"}:
+        if compact_mode is not None and compact_mode not in {"none", "local", "summary", "standalone"}:
             raise ValueError("Invalid conversation compaction mode")
         existing = None if new else self.load()
         if resume and existing is None:
